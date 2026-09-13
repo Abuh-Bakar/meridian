@@ -6,6 +6,8 @@ import {
   isMigrationCooldownError,
   isStaleAdapterError,
   isTransientKeeperError,
+  keeperFeeForAttempt,
+  KEEPER_BASE_FEE_STROOPS,
   MIGRATION_COOLDOWN_ERROR_TEXT,
   rawErrorText,
   StaleAdapterError,
@@ -72,6 +74,11 @@ describe("keeper-tx", () => {
       expect(isTransientKeeperError(new Error("Fatal permission error"))).toBe(
         false
       );
+      expect(
+        isTransientKeeperError(
+          new Error("Transaction rejected at submission: txInsufficientFee")
+        )
+      ).toBe(true);
     });
 
     it("isTransientKeeperError ignores status-code digits embedded in a longer number", () => {
@@ -94,6 +101,30 @@ describe("keeper-tx", () => {
     it("isTransientKeeperError matches transient keywords regardless of case", () => {
       expect(isTransientKeeperError(new Error("Request TIMEOUT"))).toBe(true);
       expect(isTransientKeeperError(new Error("Timed Out waiting"))).toBe(true);
+    });
+
+    it("keeperFeeForAttempt doubles per attempt starting from the keeper base fee", () => {
+      // 1-indexed to match withKeeperRetry's own callback (keeper-retry.ts
+      // converts withRetry's 0-indexed attempt to 1-indexed before calling
+      // the caller's callback), not 0-indexed.
+      expect(keeperFeeForAttempt(1)).toBe(String(KEEPER_BASE_FEE_STROOPS));
+      expect(keeperFeeForAttempt(2)).toBe(String(KEEPER_BASE_FEE_STROOPS * 2));
+      expect(keeperFeeForAttempt(3)).toBe(String(KEEPER_BASE_FEE_STROOPS * 4));
+    });
+
+    it("keeperFeeForAttempt caps the fee instead of growing unbounded at high attempt counts", () => {
+      // An operator raising maxAttempts to ride out sustained congestion
+      // (parsePositiveInt enforces no upper bound on it) must not turn the
+      // doubling schedule into an unbounded real-money bid.
+      expect(keeperFeeForAttempt(20)).toBe("1000000");
+      expect(keeperFeeForAttempt(30)).toBe("1000000");
+    });
+
+    it("keeperFeeForAttempt starts well above the network's absolute fee floor", () => {
+      // The whole point of this constant: 100 stroops (the network minimum)
+      // is what produced the real txInsufficientFee rejections this fix
+      // addresses.
+      expect(KEEPER_BASE_FEE_STROOPS).toBeGreaterThan(100);
     });
 
     it("isDefinitiveOnChainFailure does not match a still-unknown timeout outcome", () => {

@@ -288,8 +288,13 @@ async function submitAccrualTransaction(
   adapter: DiscoveredAdapter,
   config: BlendAccrualKeeperConfig,
   server: KeeperRpcServer,
-  priorHash?: string,
-  hooks?: KeeperSubmissionHooks
+  priorHash: string | undefined,
+  hooks: KeeperSubmissionHooks | undefined,
+  // Unexported, single call site (withKeeperRetry's callback below), which
+  // always passes this explicitly: required rather than defaulted so a
+  // future call site added without threading a real attempt through fails
+  // to compile instead of silently submitting at the base fee.
+  attempt: number
 ): Promise<Omit<AccrualSuccess, "attempts" | "vaultId" | "adapterId">> {
   // The accrue and migration keepers act on the same vault's adapter with no
   // coordination between them: this keeper can read get_adapter() at
@@ -322,7 +327,8 @@ async function submitAccrualTransaction(
     },
     server,
     priorHash,
-    hooks
+    hooks,
+    attempt
   );
 }
 
@@ -499,7 +505,8 @@ export async function runBlendAccrualKeeper(
                 config,
                 server,
                 priorHash,
-                submissionHooks
+                submissionHooks,
+                attempt
               ).catch((err: unknown) => {
                 if (err instanceof SubmissionInFlightError) {
                   priorHash = err.sentHash;
