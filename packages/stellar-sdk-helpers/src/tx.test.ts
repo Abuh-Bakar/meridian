@@ -15,6 +15,9 @@ import {
   resolveProtocol,
   waitForTransaction,
   simErrorMessage,
+  prepareSorobanTx,
+  ContractSimulationError,
+  VAULT_CONTRACT_ERROR_MESSAGES,
   buildAddTrustlineTx,
   simulateView,
   assertFaucetPayment,
@@ -49,9 +52,50 @@ function steppingClock(stepMs: number) {
 }
 
 describe("simErrorMessage", () => {
-  it("returns just the first line of a multi-line diagnostic", () => {
+  it("maps a known vault contract code instead of the terse first line", () => {
     const raw = "HostError: Error(Contract, #1)\n  at [0]: ...\n  at [1]: ...";
-    expect(simErrorMessage(raw)).toBe("HostError: Error(Contract, #1)");
+    expect(simErrorMessage(raw)).toBe(VAULT_CONTRACT_ERROR_MESSAGES[1]);
+  });
+
+  it("maps SlippageExceeded (#18) to an actionable message", () => {
+    const raw = "Simulation failed: Error(Contract, #18)";
+    expect(simErrorMessage(raw)).toBe(
+      "Slippage tolerance exceeded. Adjust slippage and retry."
+    );
+  });
+
+  it("maps MinAmountOutNotMet (#15) to actionable withdrawal guidance", () => {
+    expect(simErrorMessage("HostError: Error(Contract, #15)")).toBe(
+      "Withdrawal returned less USDC than your minimum. Adjust slippage and retry."
+    );
+  });
+
+  it("maps a contract code split across lines", () => {
+    const raw = "HostError: Error(Contract,\n #18)";
+    expect(simErrorMessage(raw)).toBe(VAULT_CONTRACT_ERROR_MESSAGES[18]);
+  });
+
+  it("keeps the first line when the contract code is not in the vault catalog", () => {
+    const raw = "HostError: Error(Contract, #99)\n  at [0]: ...";
+    expect(simErrorMessage(raw)).toBe("HostError: Error(Contract, #99)");
+  });
+
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])(
+    "does not relabel ambiguous contract code #%i",
+    (code) => {
+      const raw = `HostError: Error(Contract, #${code})`;
+      expect(simErrorMessage(raw)).toBe(raw);
+    }
+  );
+
+  it("does not use a contract code buried under a different host error", () => {
+    const raw =
+      "HostError: Error(WasmVm, InvalidAction)\n" +
+      "Event log:\n" +
+      "topics:[error, Error(Contract, #18)]";
+    expect(simErrorMessage(raw)).toBe(
+      "HostError: Error(WasmVm, InvalidAction)"
+    );
   });
 
   it("trims surrounding whitespace", () => {
@@ -74,6 +118,51 @@ describe("simErrorMessage", () => {
       '   2: [Failed Diagnostic Event (not emitted)] contract:CBC..., topics:[error, Error(Contract, #13)], data:["trustline entry is missing for account", GAAA...]\n';
     expect(simErrorMessage(raw)).toBe("trustline entry is missing for account");
   });
+});
+
+describe("prepareSorobanTx contract errors", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    ["HostError: Error(Contract, #18)", true],
+    ["HostError: Error(Contract, #15)", true],
+    ["HostError: Error(Contract, #2)", false],
+    ["HostError: Error(Contract, #10)", false],
+    ["HostError: Error(Contract, #99)", false],
+    ["HostError: Error(WasmVm, InvalidAction)\nError(Contract, #18)", false],
+  ] as const)(
+    "classifies %s and preserves the diagnostic",
+    async (raw, known) => {
+      const caller = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+      vi.spyOn(rpc.Server.prototype, "getAccount").mockResolvedValue(
+        new Account(caller, "0")
+      );
+      vi.spyOn(rpc.Server.prototype, "simulateTransaction").mockResolvedValue({
+        id: "1",
+        latestLedger: 1,
+        error: raw,
+        events: [],
+      });
+      const network: StellarNetwork = {
+        network: "testnet",
+        rpcUrl: "https://soroban-testnet.stellar.org",
+        passphrase: "Test SDF Network ; September 2015",
+      };
+      const error = await prepareSorobanTx(
+        network,
+        caller,
+        new Contract(CONTRACT_ADDRESSES.testnet.vault).call("deposit")
+      ).catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error instanceof ContractSimulationError).toBe(known);
+      expect(error).toHaveProperty("cause", raw);
+      expect(error).toHaveProperty(
+        "message",
+        `Simulation failed: ${simErrorMessage(raw)}`
+      );
+    }
+  );
 });
 
 describe("simulateView RPC timeout", () => {
@@ -188,7 +277,7 @@ describe("simulateView", () => {
 
     await expect(
       simulateView(server, CONTRACT_ID, PASSPHRASE, "failing_method")
-    ).rejects.toThrow("HostError: Error(Contract, #1)");
+    ).rejects.toThrow(VAULT_CONTRACT_ERROR_MESSAGES[1]);
   });
 });
 
