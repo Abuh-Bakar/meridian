@@ -4,8 +4,16 @@
   "functions": {
     "api/v1/keepers/[action].ts": { "maxDuration": 60 }
   },
+  "redirects": [
+    {
+      "source": "/app/admin/:path*",
+      "destination": "/admin/:path*",
+      "permanent": true
+    }
+  ],
   "rewrites": [
     { "source": "/app/:path*", "destination": "/app/index.html" },
+    { "source": "/admin/:path*", "destination": "/app/index.html" },
     { "source": "/docs/:path*", "destination": "/docs/:path*" }
   ],
   "headers": [
@@ -26,6 +34,15 @@
     },
     {
       "source": "/app/:path*",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://horizon.stellar.org https://horizon-testnet.stellar.org https://ewqw4hx7oa.execute-api.us-east-1.amazonaws.com; frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        }
+      ]
+    },
+    {
+      "source": "/admin/:path*",
       "headers": [
         {
           "key": "Content-Security-Policy",

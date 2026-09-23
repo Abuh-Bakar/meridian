@@ -15,14 +15,17 @@ const queryClient = new QueryClient();
 // pages, and pulling in react-router for a couple of static path splits
 // would be a heavier change than the admin dashboard itself (#615) needs.
 //
-// The app is served under /app/* (see the root vercel.json rewrite,
-// "/app/:path*" -> "/app/index.html"), so both the admin and status routes
-// live at /app/admin and /app/status — that existing rewrite already covers
-// them, no routing config change needed. A bare /admin or /status (no /app
-// prefix) is not covered by any rewrite and never reaches the SPA in
-// production.
+// The admin route is canonical at /admin. The legacy /app/admin path is also
+// recognized here as a fallback for environments that do not apply Vercel's
+// redirect before loading the SPA.
 function isAdminRoute(): boolean {
-  return window.location.pathname.startsWith("/app/admin");
+  const pathname = window.location.pathname;
+  return (
+    pathname === "/admin" ||
+    pathname.startsWith("/admin/") ||
+    pathname === "/app/admin" ||
+    pathname.startsWith("/app/admin/")
+  );
 }
 
 function isStatusRoute(): boolean {
