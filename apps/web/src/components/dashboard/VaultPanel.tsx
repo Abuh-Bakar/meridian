@@ -4,11 +4,8 @@ import { usePositions } from "../../hooks/usePositions";
 import { useVaultActions } from "../../hooks/useVaultActions";
 import { useWalletStore } from "../../store/wallet";
 import { useWalletConnect } from "../../hooks/useWalletConnect";
-import {
-  getWalletMeta,
-  hasAcceptedRiskDisclosure,
-  setRiskDisclosureAccepted,
-} from "../../lib/wallet";
+import { useRiskDisclosure } from "../../hooks/useRiskDisclosure";
+import { getWalletMeta, hasAcceptedRiskDisclosure } from "../../lib/wallet";
 import { PositionSummary } from "./PositionSummary";
 import { DepositTab } from "./DepositTab";
 import { WithdrawTab } from "./WithdrawTab";
@@ -47,12 +44,12 @@ export function VaultPanel() {
 
   const [tab, setTab] = useState<Tab>("deposit");
   const [amount, setAmount] = useState("");
-  // Separate from useWalletConnect's showRiskDisclosure: that one only ever
-  // fires from the connect button, so a wallet already connected elsewhere
-  // (e.g. via AdminLogin, which skips the disclosure) would otherwise reach
-  // this deposit button with no way to ever see or accept it.
-  const [showDepositRiskDisclosure, setShowDepositRiskDisclosure] =
-    useState(false);
+  // Deposit-time gate. useWalletConnect's gate only fires from the connect
+  // button, so a wallet already connected elsewhere (e.g. via AdminLogin,
+  // which skips the disclosure) would otherwise reach this deposit button
+  // with no way to ever see or accept it. Both gates now share the same
+  // useRiskDisclosure hook (#814) rather than duplicating its state/logic.
+  const depositRiskDisclosure = useRiskDisclosure();
 
   function onAmountKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     const allowed = [
@@ -72,13 +69,13 @@ export function VaultPanel() {
   // Route to the server's recommendation: the highest-APY vault Meridian can
   // actually deposit into (excludes display-only protocols and risky pools).
   const bestVault = vaults?.find((v) => v.id === data?.recommendedVaultId);
-  // Prefer the position that matches the recommended vault so deposits and
-  // withdrawals target the same protocol. Fall back to positions[0] when no
-  // match exists (e.g. funds are in a legacy vault that is no longer recommended)
-  // so the balance remains visible and withdrawable.
+  // Deposits and withdrawals both target the recommended vault. A position
+  // in some other vault must not be shown or withdrawn here: its share price
+  // does not match bestVault, so the withdraw tab would display the wrong
+  // balance and the contract would revert.
   const position = bestVault
-    ? (positions.find((p) => p.vaultId === bestVault.id) ?? positions[0])
-    : positions[0];
+    ? positions.find((p) => p.vaultId === bestVault.id)
+    : undefined;
   const hasPosition =
     position && Number.isFinite(position.deposited) && position.deposited > 0;
 
@@ -86,20 +83,21 @@ export function VaultPanel() {
 
   async function handleDeposit() {
     if (!amount || !bestVault) return;
-    if (!hasAcceptedRiskDisclosure()) {
-      setShowDepositRiskDisclosure(true);
-      return;
-    }
-    // Only a position actually held in bestVault carries a share price
-    // relevant to this deposit: `position` above can fall back to a
-    // different vault's entry, and a first-time depositor has none at all.
-    // In both cases there's no reliable price to derive a floor from, so
-    // the deposit goes through with no slippage protection (min_shares_out
-    // omitted, which the contract treats as "0") rather than guessing a
-    // wrong floor that could revert every legitimate deposit with
-    // SlippageExceeded — a 1:1 fallback assumption is wrong the moment the
-    // vault has accrued any yield past inception.
-    const bestVaultPosition = positions.find((p) => p.vaultId === bestVault.id);
+    // Runs the deposit now if already accepted, otherwise once the user
+    // accepts the disclosure modal below (#814).
+    await depositRiskDisclosure.requireAcceptance(() =>
+      executeDeposit(bestVault)
+    );
+  }
+
+  async function executeDeposit(vault: NonNullable<typeof bestVault>) {
+    // Only a position held in bestVault has a share price for this deposit.
+    // A first-time depositor has none. There is no reliable price to derive
+    // a floor from, so the deposit goes through with no slippage protection
+    // (min_shares_out omitted, which the contract treats as "0") rather than
+    // guessing a floor that could revert a legitimate deposit with
+    // SlippageExceeded.
+    const bestVaultPosition = positions.find((p) => p.vaultId === vault.id);
     const numAmount = parseFloat(amount);
     const minSharesOut =
       bestVaultPosition &&
@@ -114,8 +112,8 @@ export function VaultPanel() {
         : undefined;
     const ok = await deposit(
       amount,
-      bestVault.id,
-      bestVault.asset,
+      vault.id,
+      vault.asset,
       minSharesOut,
       hasAcceptedRiskDisclosure()
     );
@@ -124,6 +122,7 @@ export function VaultPanel() {
 
   async function handleWithdraw() {
     if (!amount || !bestVault || !position) return;
+    if (position.vaultId !== bestVault.id) return;
     if (parseFloat(amount) > position.shares) return;
     const numShares = parseFloat(amount);
     const expectedUsdc =
@@ -133,7 +132,7 @@ export function VaultPanel() {
     const minUsdcOut = Math.max(0, expectedUsdc * slippageFactor).toFixed(7);
     const ok = await withdraw(
       amount,
-      position.vaultId,
+      bestVault.id,
       bestVault.asset,
       minUsdcOut
     );
@@ -146,7 +145,7 @@ export function VaultPanel() {
   }
 
   return (
-    <div className="rounded-2xl border border-gray-800 bg-[#0d1e35] overflow-hidden shadow-xl shadow-black/40">
+    <div className="rounded-2xl border border-gray-800 bg-deep overflow-hidden shadow-xl shadow-black/40">
       {/* Hero — identity + stats */}
       <div className="px-7 pt-7 pb-6">
         {/* Identity row */}
@@ -331,14 +330,10 @@ export function VaultPanel() {
             onSubmit={handleWithdraw}
           />
         )}
-        {showDepositRiskDisclosure && (
+        {depositRiskDisclosure.show && (
           <RiskDisclosureModal
-            onAccept={() => {
-              setRiskDisclosureAccepted();
-              setShowDepositRiskDisclosure(false);
-              void handleDeposit();
-            }}
-            onCancel={() => setShowDepositRiskDisclosure(false)}
+            onAccept={() => void depositRiskDisclosure.accept()}
+            onCancel={depositRiskDisclosure.cancel}
           />
         )}
       </div>
