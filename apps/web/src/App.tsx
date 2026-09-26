@@ -15,9 +15,10 @@ const queryClient = new QueryClient();
 // pages, and pulling in react-router for a couple of static path splits
 // would be a heavier change than the admin dashboard itself (#615) needs.
 //
-// The admin route is canonical at /admin. The legacy /app/admin path is also
-// recognized here as a fallback for environments that do not apply Vercel's
-// redirect before loading the SPA.
+// The public dashboard and status page stay under /app/*, which the existing
+// Vercel rewrite serves from /app/index.html. Admin is canonical at /admin;
+// the legacy /app/admin path is also recognized if Vercel's redirect is not
+// applied before the SPA loads.
 function isAdminRoute(): boolean {
   const pathname = window.location.pathname;
   return (
